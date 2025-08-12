@@ -64,9 +64,9 @@ int Dynamixel::initialize_uart()
 	static constexpr int TIMEOUT_US = 11_ms;
 	_uart_fd_timeout = { .tv_sec = 0, .tv_usec = TIMEOUT_US };
 
-	int32_t baud_rate_parameter_value{0};
+	int32_t baud_rate_parameter_value = 57600;
 	int32_t baud_rate_posix{0};
-	param_get(param_find(_stored_baud_rate_parameter), &baud_rate_parameter_value);
+	//param_get(param_find(_stored_baud_rate_parameter), &baud_rate_parameter_value);
 
 	switch (baud_rate_parameter_value) {
 	case 0: // Auto
@@ -159,7 +159,7 @@ void Dynamixel::send_command(uint8_t id, uint16_t reg, uint32_t value)
 	uint8_t txpacket[16] {};
 
 	txpacket[PKT_ID] = id;
-	txpacket[PKT_LENGTH_L] = 5 + 1;
+	txpacket[PKT_LENGTH_L] = 5 + 4;
 	txpacket[PKT_LENGTH_H] = 0;
 	txpacket[PKT_INSTRUCTION] = INST_WRITE;
 	txpacket[PKT_INSTRUCTION+1] = DXL_LOBYTE(reg);
@@ -288,7 +288,7 @@ int Dynamixel::send_packet(uint8_t *txpacket)
 
 	delay_time_us += total_packet_length * us_per_byte + us_gap;
 
-	readResponse(REG_GOAL_POSITION, txpacket, total_packet_length);
+	//readResponse(REG_GOAL_POSITION, txpacket, total_packet_length);
 
 	return OK;
 }
@@ -422,35 +422,43 @@ int Dynamixel::custom_command(int argc, char *argv[])
 		}
 
 		//Initialize UART if it has not been done before
-		if (!instance->_uart_initialized) {
+		//if (!instance->_uart_initialized) {
 			if (instance->initialize_uart() == OK) {
 				instance->_uart_initialized = true;
-				PX4_INFO("Initializing UART");
+				PX4_INFO("Initializing UART, %d", instance->_uart_fd);
 			} else {
 				instance->ScheduleDelayed(1_s);	//Retry to initialize if it fails
 				return ERROR;
 				PX4_ERR("UART NOT INITIALIZED");
 			}
-		}
+		//}
 
-		instance->send_command(100, REG_TORQUE_ENABLE, 1);
+		instance->send_command(BROADCAST_ID, REG_TORQUE_ENABLE, 1);
 		px4_usleep(100);
-		instance->send_command(100, REG_LED_ENABLE, 1);
+		instance->send_command(BROADCAST_ID, REG_LED_ENABLE, 1);
 		PX4_INFO("Torque Enabled");
+
+		return OK;
 	}
 
 	if (!strcmp(argv[0], "move")){
 		int16_t angle = (int)strtol(argv[1],nullptr,10);
-		PX4_INFO("Moving to angle: %d", angle);
 
-		PX4_INFO("Puerto Serie: %d", instance->_uart_fd);
+		if (instance->initialize_uart() == OK) {
+				instance->_uart_initialized = true;
+				PX4_INFO("Initializing UART, %d", instance->_uart_fd);
+			} else {
+				instance->ScheduleDelayed(1_s);	//Retry to initialize if it fails
+				return ERROR;
+				PX4_ERR("UART NOT INITIALIZED");
+			}
 
 		if (instance == nullptr) {
 			PX4_ERR("Error: no se pudo obtener la instancia del driver.");
 			return ERROR;
 		}
 
-		instance->send_command(100, REG_GOAL_POSITION, angle);
+		instance->send_command(BROADCAST_ID, REG_GOAL_POSITION, angle);
 
 		return OK;
 	}
