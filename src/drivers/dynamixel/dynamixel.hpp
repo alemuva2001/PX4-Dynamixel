@@ -49,16 +49,17 @@
 
 #include <sys/select.h>
 #include <sys/time.h>
+#include <mathlib/mathlib.h>
 
 #include <uORB/Subscription.hpp>
-#include <uORB/topics/actuator_armed.h>
-#include <uORB/topics/parameter_update.h>
-
 #include <uORB/Publication.hpp>
-#include <uORB/topics/wheel_encoders.h>
 
-#include <cerrno>   // Para la variable global errno y los códigos de error como EBADF
-#include <cstring>  // Para la función strerror()
+#include <uORB/topics/parameter_update.h>
+#include <parameters/param.h>
+#include <px4_platform_common/log.h>
+
+#include <uORB/uORB.h>
+#include <uORB/topics/actuator_servos.h>
 
 //Definitions for message construction
 #define BROADCAST_ID 0xFE
@@ -119,20 +120,14 @@
 #define REG_GOAL_POSITION 116
 #define REG_CURRENT_POSITION 132
 
-// how many times to send servo configure msgs
-#define CONFIGURE_SERVO_COUNT 4
-
-// how many times to send servo detection
-#define DETECT_SERVO_COUNT 4
-
-class Dynamixel : public ModuleBase<Dynamixel>, public OutputModuleInterface
+class Dynamixel : public ModuleBase<Dynamixel>, public px4::ScheduledWorkItem
 {
 public:
 	/**
 	 * @param device_name Name of the serial port e.g. "/dev/ttyS2"
 	 * @param baud_rate_parameter Name of the parameter that holds the baud rate of this serial port
 	 */
-	Dynamixel(const char *device_name, const char *baud_rate);
+	Dynamixel(const char *device_name, int32_t baud_rate);
 	virtual ~Dynamixel() override;
 
 	static int task_spawn(int argc, char *argv[]); ///< @see ModuleBase
@@ -142,26 +137,22 @@ public:
 
 	void Run() override;
 
-	/** @see OutputModuleInterface */
-	bool updateOutputs(uint16_t outputs[MAX_ACTUATORS],
-			   unsigned num_outputs, unsigned num_control_groups_updated) override;
-
-
 private:
 
 	int send_packet(uint8_t *txpacket);
-	//void read_bytes();
-	//void process_packet(const uint8_t *pkt, uint8_t length);
 
-	//bool enable();
-	//bool disable();
+	bool init(const char *device_name, int32_t baud_rate);
 
-	//void update_armed_status();
+	static int update_parameters();
 
-	/*DEFINE_PARAMETERS(
-		(ParamInt<px4::params::DNMXL_ADDRESS>) _param_dnmxl_address,
-		(ParamInt<px4::params::DNMXL_COUNTS_REV>) _param_dnmxl_counts_rev
-	)*/
+	//uOrbs
+	uORB::Subscription _servo_output_sub{ORB_ID(actuator_servos)};
+	uORB::Subscription _parameter_update_sub{ORB_ID(parameter_update)};
+
+	uORB::Publication<actuator_servos_s> _actuator_servos_pub{ORB_ID(actuator_servos)};
+
+
+	void test_publish_actuator_servos(float servo0_val, int32_t id);
 
 	// UART handling
 	bool _uart_initialized{false};
@@ -169,10 +160,15 @@ private:
 	fd_set _uart_fd_set;
 	struct timeval _uart_fd_timeout;
 
-	uint32_t baudrate;
-    	uint32_t us_per_byte;
-    	uint32_t us_gap;
-	uint32_t delay_time_us;
+	static int32_t baudrate;
+	static int32_t port;
+	static char device_name_save[256];
+	static int32_t first_servo_id;
+	static int32_t servo_num;
+
+	int32_t baudrate_save;
+
+	int cont = 0;
 
 	int initialize_uart();
 
@@ -182,9 +178,7 @@ private:
 
 	uint16_t update_crc(uint16_t crc_accum, uint8_t *data_blk_ptr, uint16_t data_blk_size);
 
-	bool set_angles(const float *angles);
 	void send_command(uint8_t id, uint16_t reg, uint32_t value);
-	void configure_servos(void);
 	void print_packet(const char *label, const uint8_t *packet, int length);
 	int readResponse(uint8_t command, uint8_t *read_buffer, size_t bytes_to_read);
 };

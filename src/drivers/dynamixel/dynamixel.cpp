@@ -1,6 +1,6 @@
 /****************************************************************************
  *
- *   Copyright (C) 2013-2023 PX4 Development Team. All rights reserved.
+ *   Copyright (C) 2025 PX4 Development Team. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -43,14 +43,22 @@
 #include "dynamixel.hpp"
 #include <termios.h>
 
-Dynamixel::Dynamixel(const char *device_name, const char *baud_rate) :
-	OutputModuleInterface(MODULE_NAME, px4::wq_configurations::hp_default)
+int32_t Dynamixel::port;
+char Dynamixel::device_name_save[256];
+int32_t Dynamixel::first_servo_id;
+int32_t Dynamixel::servo_num;
+int32_t Dynamixel::baudrate;
+
+Dynamixel::Dynamixel(const char *device_name, int32_t baud_rate) :
+	ScheduledWorkItem(MODULE_NAME, px4::wq_configurations::hp_default)
 {
 	strncpy(_stored_device_name, device_name, sizeof(_stored_device_name) - 1);
 	_stored_device_name[sizeof(_stored_device_name) - 1] = '\0'; // Ensure null-termination
 
-	strncpy(_stored_baud_rate_parameter, baud_rate, sizeof(_stored_baud_rate_parameter) - 1);
-	_stored_baud_rate_parameter[sizeof(_stored_baud_rate_parameter) - 1] = '\0'; // Ensure null-termination
+	baudrate_save = baud_rate;
+
+	/*strncpy(_stored_baud_rate_parameter, baud_rate, sizeof(_stored_baud_rate_parameter) - 1);
+	_stored_baud_rate_parameter[sizeof(_stored_baud_rate_parameter) - 1] = '\0';*/ // Ensure null-termination
 }
 
 Dynamixel::~Dynamixel()
@@ -64,7 +72,7 @@ int Dynamixel::initialize_uart()
 	static constexpr int TIMEOUT_US = 11_ms;
 	_uart_fd_timeout = { .tv_sec = 0, .tv_usec = TIMEOUT_US };
 
-	int32_t baud_rate_parameter_value = 57600;
+	int32_t baud_rate_parameter_value = baudrate;
 	int32_t baud_rate_posix{0};
 	//param_get(param_find(_stored_baud_rate_parameter), &baud_rate_parameter_value);
 
@@ -141,19 +149,10 @@ int Dynamixel::initialize_uart()
 
 	PX4_INFO("Configured");
 
-	baudrate = baud_rate_posix;
-        us_per_byte = 10 * 1e6 / baudrate;
-        us_gap = 4 * 1e6 / baudrate;
-
 	return OK;
 }
 
-////////////////////////HAY QUE REVISAR TODO EL CODIGO///////////////////////////////////////
-bool Dynamixel::set_angles(const float *angles)
-{
-    return true;
-}
-
+//Send commands to the servos
 void Dynamixel::send_command(uint8_t id, uint16_t reg, uint32_t value)
 {
 	uint8_t txpacket[16] {};
@@ -166,11 +165,12 @@ void Dynamixel::send_command(uint8_t id, uint16_t reg, uint32_t value)
 	txpacket[PKT_INSTRUCTION+2] = DXL_HIBYTE(reg);
 	memcpy(&txpacket[PKT_INSTRUCTION+3], &value, 4);
 
-	PX4_INFO("Enviando paquete");
+	PX4_INFO("Sending packet");
 	send_packet(txpacket);
 
 }
 
+//CRC for the packet
 uint16_t Dynamixel::update_crc(uint16_t crc_accum, uint8_t *data_blk_ptr, uint16_t data_blk_size)
 {
     uint16_t i;
@@ -215,16 +215,11 @@ uint16_t Dynamixel::update_crc(uint16_t crc_accum, uint8_t *data_blk_ptr, uint16
     return crc_accum;
 }
 
+//Receive the instruction and build the packet to send to the servos
 int Dynamixel::send_packet(uint8_t *txpacket)
 {
 	int packet_length_in = DXL_MAKEWORD(txpacket[PKT_LENGTH_L], txpacket[PKT_LENGTH_H]);
     	int packet_length_out = packet_length_in;
-
-	if (packet_length_in < 8) {
-		// INSTRUCTION, ADDR_L, ADDR_H, CRC16_L, CRC16_H + FF FF FD
-		PX4_ERR("Tamaño pequeño");
-		//return ERROR;
-	}
 
 	uint8_t *packet_ptr;
 	uint16_t packet_length_before_crc = packet_length_in - 2;
@@ -234,12 +229,6 @@ int Dynamixel::send_packet(uint8_t *txpacket)
 		if (packet_ptr[0] == 0xFF && packet_ptr[1] == 0xFF && packet_ptr[2] == 0xFD) {
 		packet_length_out++;
 		}
-	}
-
-	if (packet_length_in == packet_length_out) {
-		// no stuffing required
-		PX4_ERR("Tamaño diferente");
-		//return ERROR;
 	}
 
 	uint16_t out_index  = packet_length_out + 6 - 2;  // last index before crc
@@ -261,8 +250,6 @@ int Dynamixel::send_packet(uint8_t *txpacket)
 	txpacket[PKT_LENGTH_L] = DXL_LOBYTE(packet_length_out);
 	txpacket[PKT_LENGTH_H] = DXL_HIBYTE(packet_length_out);
 
-	///////////////////////////////////////////////////////////////////
-
 	uint16_t total_packet_length = DXL_MAKEWORD(txpacket[PKT_LENGTH_L], txpacket[PKT_LENGTH_H]) + 7;
 
 	// make packet header
@@ -276,8 +263,7 @@ int Dynamixel::send_packet(uint8_t *txpacket)
 	txpacket[total_packet_length - 2] = DXL_LOBYTE(crc);
 	txpacket[total_packet_length - 1] = DXL_HIBYTE(crc);
 
-	PX4_INFO("Imprimiendo paquete");
-	print_packet("Paquete TX", txpacket, total_packet_length);
+	print_packet("TX Packet:", txpacket, total_packet_length);
 
 	size_t bytes_written = write(_uart_fd, txpacket, total_packet_length);
 
@@ -286,13 +272,10 @@ int Dynamixel::send_packet(uint8_t *txpacket)
 		return ERROR;
 	}
 
-	delay_time_us += total_packet_length * us_per_byte + us_gap;
-
-	//readResponse(REG_GOAL_POSITION, txpacket, total_packet_length);
-
 	return OK;
 }
 
+//Debug function to check the packet construction
 void Dynamixel::print_packet(const char *label, const uint8_t *packet, int length)
 {
 	// Crea un buffer lo suficientemente grande. Cada byte necesita 3 caracteres (ej. " FF")
@@ -314,87 +297,162 @@ void Dynamixel::print_packet(const char *label, const uint8_t *packet, int lengt
 	PX4_INFO("%s", buf);
 }
 
-int Dynamixel::readResponse(uint8_t command, uint8_t *read_buffer, size_t bytes_to_read)
+bool Dynamixel::init(const char *device_name, int32_t baud_rate)
 {
-	size_t total_bytes_read = 0;
+	// Copiar los nombres de los argumentos
+	strncpy(_stored_device_name, device_name, sizeof(_stored_device_name) - 1);
+	_stored_device_name[sizeof(_stored_device_name) - 1] = '\0';
 
-	if (FD_ISSET(_uart_fd, &_uart_fd_set)) {
-        	PX4_INFO("FD_ISSET: _uart_fd está correctamente en _uart_fd_set.");
-    	} else {
-        	PX4_ERR("FD_ISSET: ¡_uart_fd NO está en _uart_fd_set! Esto es un problema.");
-        // Podríamos querer preparar el set de nuevo aquí como medida de seguridad
-        	FD_ZERO(&_uart_fd_set);
-        	FD_SET(_uart_fd, &_uart_fd_set);
-        	PX4_INFO("FD_SET ha sido re-aplicado.");
-    	}
-	PX4_WARN("Settings: Applied");
+	baudrate_save = baud_rate;
 
-	while (total_bytes_read < bytes_to_read) {
-		int select_status = select(_uart_fd + 1, &_uart_fd_set, nullptr, nullptr, &_uart_fd_timeout);
-
-		if (select_status <= 0) {
-			PX4_ERR("Select timeout %d\n", select_status);
-			PX4_ERR("select() falló:");
-			PX4_ERR("%d, %s", errno, strerror(errno));
-			//return ERROR;
+	//Initialize UART
+	if (initialize_uart() == OK) {
+		if (!_uart_initialized){
+			_uart_initialized = true;
+			PX4_INFO("Initializing UART, %d", _uart_fd);
 		}
-
-		int bytes_read = read(_uart_fd, &read_buffer[total_bytes_read], bytes_to_read - total_bytes_read);
-
-		if (bytes_read <= 0) {
-			PX4_ERR("Read timeout %d\n", select_status);
-			PX4_ERR("read() falló:");
-			PX4_ERR("%d, %s", errno, strerror(errno));
-			return ERROR;
-		}
-
-		total_bytes_read += bytes_read;
+	} else {
+		PX4_ERR("UART NOT INITIALIZED");
 	}
 
-	if (total_bytes_read < 2) {
-		PX4_ERR("Too short payload received\n");
+	//Initialize servos
+	send_command(BROADCAST_ID, REG_TORQUE_ENABLE, 1);
+	px4_usleep(100);
+	send_command(BROADCAST_ID, REG_LED_ENABLE, 1);
+	PX4_INFO("Torque Enabled");
+
+	// Agendar la primera ejecución de Run()
+	ScheduleNow();
+
+	return true;
+}
+
+int Dynamixel::update_parameters(){
+
+	// ParamHandle obtiene un "handle" para el parámetro
+	param_t baudrate_parameter = param_find("DNMXL_BAUDRATE");
+	param_t device_name_param = param_find("DNMXL_PORT");
+	param_t first_id_param = param_find("DNMXL_FIRST_ID");
+	param_t servo_num_param = param_find("DNMXL_NUM_SERVOS");
+
+	// Leer el valor
+	if (baudrate_parameter != PARAM_INVALID) {
+ 		param_get(baudrate_parameter, &baudrate);
+ 		PX4_INFO("Baudrate configurado: %d", (int)baudrate);
+	} else {
+ 		PX4_ERR("No se pudo encontrar el parámetro DNMXL_BAUDRATE");
 		return ERROR;
 	}
 
-	PX4_INFO("Imprimiendo paquete recibido");
+	if (device_name_param != PARAM_INVALID) {
+ 		param_get(device_name_param, &port);
+		switch (port) {
 
-	print_packet("Paquete TX", read_buffer, total_bytes_read);
+		default:
+			PX4_ERR("Please configure the port's baud_rate_parameter_value");
+			break;
 
-	return total_bytes_read;
+		case 1:
+			strncpy(device_name_save, "/dev/ttyS1", sizeof(device_name_save) - 1);
+			device_name_save[sizeof(device_name_save) - 1] = '\0';
+			break;
+
+		case 2:
+			strncpy(device_name_save, "/dev/ttyS2", sizeof(device_name_save) - 1);
+			device_name_save[sizeof(device_name_save) - 1] = '\0';
+			break;
+
+		case 3:
+			strncpy(device_name_save, "/dev/ttyS3", sizeof(device_name_save) - 1);
+			device_name_save[sizeof(device_name_save) - 1] = '\0';
+			break;
+
+		case 4:
+			strncpy(device_name_save, "/dev/ttyS4", sizeof(device_name_save) - 1);
+			device_name_save[sizeof(device_name_save) - 1] = '\0';
+			break;
+		}
+
+ 		PX4_INFO("Puerto configurado: %s", device_name_save);
+	} else {
+ 		PX4_ERR("No se pudo encontrar el parámetro DNMXL_PORT");
+		return ERROR;
+	}
+
+	if (first_id_param != PARAM_INVALID) {
+ 		param_get(first_id_param, &first_servo_id);
+ 		PX4_INFO("First ID configurado: %d", (int)first_servo_id);
+	} else {
+ 		PX4_ERR("No se pudo encontrar el parámetro DNMXL_FIRST_ID");
+		return ERROR;
+	}
+
+	if (servo_num_param != PARAM_INVALID) {
+ 		param_get(servo_num_param, &servo_num);
+ 		PX4_INFO("Numero de Servos configurado: %d", (int)servo_num);
+	} else {
+ 		PX4_ERR("No se pudo encontrar el parámetro DNMXL_NUM_SERVOS");
+		return ERROR;
+	}
+
+	return OK;
 }
 
 //Initialize the driver and initial setup of the servos
 int Dynamixel::task_spawn(int argc, char *argv[])
 {
-	const char *device_name = argv[1];
-	const char *baud_rate_parameter_value = argv[2];
 
-	Dynamixel *instance = new Dynamixel(device_name, baud_rate_parameter_value);
+	update_parameters();
+
+	Dynamixel *instance = new Dynamixel(device_name_save, baudrate);
 
 	PX4_INFO("Initializing");
 
 	if (instance) {
+
 		_object.store(instance);
 		_task_id = task_id_is_work_queue;
-		instance->ScheduleNow();
-		PX4_INFO("InitializingOK");
+		instance->init(device_name_save, baudrate);
+		PX4_INFO("Initialized OK");
 		return OK;
+
 	} else {
-		PX4_INFO("InitializingERROR");
+		PX4_INFO("Initialize ERROR");
 		PX4_ERR("alloc failed");
 	}
 
-	PX4_INFO("Initializing");
-
 	delete instance;
+
 	_object.store(nullptr);
 	_task_id = -1;
 
-	printf("Ending task_spawn");
+	PX4_ERR("Ending task_spawn");
 
 	return ERROR;
 }
 
+void Dynamixel::test_publish_actuator_servos(float servo0_val, int32_t id)
+{
+	// 1. Crear una instancia de la estructura de datos del tópico.
+	actuator_servos_s servos_msg{}; // {} la inicializa a ceros
+
+	// 2. Rellenar la estructura con los datos.
+	servos_msg.timestamp = hrt_absolute_time(); // Siempre incluye un timestamp válido
+
+	// Asigna los valores a los servos correspondientes.
+	// El resto de los valores en el array `control` se quedarán en 0.0f.
+	if (id>servo_num || id<=0) id = 1;
+
+	servos_msg.control[id-1] = servo0_val;
+
+	// 3. Publicar el mensaje.
+	_actuator_servos_pub.publish(servos_msg);
+
+	PX4_INFO("Mensaje de prueba publicado en actuator_servos: servo_%d = %.2f",
+		 (int)id, (double)servo0_val);
+}
+
+//For debug purposes
 int Dynamixel::custom_command(int argc, char *argv[])
 {
 	char reason_string[100];
@@ -403,7 +461,30 @@ int Dynamixel::custom_command(int argc, char *argv[])
 
 	PX4_INFO("%s", reason_string);
 
-	Dynamixel *instance = get_instance();
+	static Dynamixel *instance = get_instance();
+
+	if (!strcmp(argv[0], "test")){
+
+		int16_t value = (int)strtol(argv[1],nullptr,10);
+		int16_t id = (int)strtol(argv[2],nullptr,10);
+
+		instance->cont = value;
+
+		instance->test_publish_actuator_servos(value, id);
+
+		return OK;
+	}
+
+	//Initialize UART
+	if (instance->initialize_uart() == OK) {
+		if (!instance->_uart_initialized){
+			instance->_uart_initialized = true;
+			PX4_INFO("Initializing UART, %d", instance->_uart_fd);
+		}
+	} else {
+		PX4_ERR("UART NOT INITIALIZED");
+		return ERROR;
+	}
 
 	if (argc < 1) {
 		return print_usage("unknown command");
@@ -421,18 +502,6 @@ int Dynamixel::custom_command(int argc, char *argv[])
 			return -1;
 		}
 
-		//Initialize UART if it has not been done before
-		//if (!instance->_uart_initialized) {
-			if (instance->initialize_uart() == OK) {
-				instance->_uart_initialized = true;
-				PX4_INFO("Initializing UART, %d", instance->_uart_fd);
-			} else {
-				instance->ScheduleDelayed(1_s);	//Retry to initialize if it fails
-				return ERROR;
-				PX4_ERR("UART NOT INITIALIZED");
-			}
-		//}
-
 		instance->send_command(BROADCAST_ID, REG_TORQUE_ENABLE, 1);
 		px4_usleep(100);
 		instance->send_command(BROADCAST_ID, REG_LED_ENABLE, 1);
@@ -442,21 +511,8 @@ int Dynamixel::custom_command(int argc, char *argv[])
 	}
 
 	if (!strcmp(argv[0], "move")){
+
 		int16_t angle = (int)strtol(argv[1],nullptr,10);
-
-		if (instance->initialize_uart() == OK) {
-				instance->_uart_initialized = true;
-				PX4_INFO("Initializing UART, %d", instance->_uart_fd);
-			} else {
-				instance->ScheduleDelayed(1_s);	//Retry to initialize if it fails
-				return ERROR;
-				PX4_ERR("UART NOT INITIALIZED");
-			}
-
-		if (instance == nullptr) {
-			PX4_ERR("Error: no se pudo obtener la instancia del driver.");
-			return ERROR;
-		}
 
 		instance->send_command(BROADCAST_ID, REG_GOAL_POSITION, angle);
 
@@ -497,26 +553,51 @@ $ dynamixel start /dev/ttyS2 DNMXL_BAUD_RATE
 
 void Dynamixel::Run()
 {
-	printf("RUN");
-
 	if (should_exit()) {
 		ScheduleClear();
 		exit_and_cleanup();
 		return;
 	}
-	PX4_INFO("RUN");
-	//Initialize UART if it has not been done before
-	if (!_uart_initialized) {
-		if (initialize_uart() == OK) {
-			_uart_initialized = true;
-		} else {
-			ScheduleDelayed(1_s);	//Retry to initialize if it fails
-			return;
+
+	PX4_INFO("Running");
+
+	if (_parameter_update_sub.updated()) {
+		parameter_update_s parameter_update;
+		_parameter_update_sub.copy(&parameter_update);
+		update_parameters();
+	}
+
+	// --- Lógica de Sondeo (Polling) ---
+	// Comprueba si el tópico ha sido actualizado desde la última vez que miramos.
+	if (_servo_output_sub.updated()) {
+		actuator_servos_s servo_data;
+		if (_servo_output_sub.copy(&servo_data)) {
+
+			//Initialize UART
+			if (initialize_uart() == OK) {
+				if (!_uart_initialized){
+					_uart_initialized = true;
+					PX4_INFO("Initializing UART, %d", _uart_fd);
+				}
+			} else {
+				PX4_ERR("UART NOT INITIALIZED");
+				return;
+			}
+
+			for (int i = 0; i < servo_num; ++i) {
+				//const float min_pos = 0.0f;
+				//const float max_pos = 4095.0f;
+				//float normalized_value = (servo_data.control[i] + 1.0f) / 2.0f;
+				//uint32_t goal_position = min_pos + (uint32_t)(normalized_value * (max_pos - min_pos));
+				uint32_t goal_position = (int)servo_data.control[i];
+				uint8_t servo_id = first_servo_id + i;
+				send_command(servo_id, REG_GOAL_POSITION, goal_position);
+			}
 		}
 	}
-	PX4_INFO("RUN");
-	//Dynamixel *instance = get_instance();
-	//instance->send_command(BROADCAST_ID, REG_GOAL_POSITION, 1000);
+
+	// Re-agenda la ejecución de esta función para que se ejecute de nuevo
+	ScheduleNow();
 }
 
 // Implementación de print_status()
@@ -525,15 +606,9 @@ int Dynamixel::print_status()
 	PX4_INFO("Module Running");
 	PX4_INFO("UART initialized: %s", _uart_initialized ? "OK" : "Waiting");
 	PX4_INFO("Device: %s", _stored_device_name);
-
+	PX4_INFO("BaudRate: %s", _stored_device_name);
+	PX4_INFO("Contador: %d", (int)cont);
 	return 0;
-}
-
-bool Dynamixel::updateOutputs(uint16_t outputs[MAX_ACTUATORS],
-			     unsigned num_outputs, unsigned num_control_groups_updated)
-{
-
-	return true;
 }
 
 extern "C" __EXPORT int dynamixel_main(int argc, char *argv[])

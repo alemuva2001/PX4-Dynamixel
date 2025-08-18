@@ -54,6 +54,8 @@
 #include <uORB/Publication.hpp>
 #include <uORB/topics/wheel_encoders.h>
 
+#include <uORB/topics/actuator_servos.h>
+
 class Roboclaw : public ModuleBase<Roboclaw>, public OutputModuleInterface
 {
 public:

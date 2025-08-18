@@ -1,45 +1,45 @@
 module_name: Dynamixel Driver
-serial_config:
-  - command: dynamixel start ${SERIAL_DEV} ${BAUD_PARAM}
-    port_config_param:
-      name: DNMXL_SER_CFG
-      group: Dynamixel
-
-actuator_output:
-  output_groups:
-    - param_prefix: DNMXL
-      channel_label: 'Channel'
-      standard_params:
-        disarmed: { min: 128, max: 128, default: 128 }
-        min: { min: 1, max: 128, default: 1 }
-        max: { min: 128, max: 256, default: 256 }
-        failsafe: { min: 0, max: 257 }
-      num_channels: 2
 
 parameters:
-  - group: Dynamixel Driver
+  - group: Other
     definitions:
-      DNMXL_COUNTS_REV:
+      DNMXL_FIRST_ID:
         description:
-          short: Number of encoder counts for one wheel revolution
-          long: The default value of 1200 corresponds to the default configuration of the Aion R1 rover.
+          short: Id of the first servo of the chain
+          long: This must be lower ID of the servos, the next servos must have consecutive ID
         type: int32
-        default: 1200
+        default: 100
         min: 1
-      DNMXL_ADDRESS:
+        max: 253
+        
+      DNMXL_BAUDRATE:
         description:
-          short: Address of the ESC on the bus
-          long: The ESC has to be configured to have an address from 0x80 to 0x87. This parameter needs to match the configured value.
+          short: Baudrate of the protocol
+          long: The baudrate must be configured using Dynamixel Wizard app.
         type: enum
-        default: 128
-        min: 128
-        max: 135
+        default: 57600
         values:
-          128: '0x80'
-          129: '0x81'
-          130: '0x82'
-          131: '0x83'
-          132: '0x84'
-          133: '0x85'
-          134: '0x86'
-          135: '0x87'
+          9100: 9100
+          57600: 57600
+          115200: 115200
+          
+      DNMXL_PORT:
+        description:
+          short: Port used to comunicate with the servos
+          long: Check the compatibility of the board
+        type: enum
+        default: 2
+        values:
+          1: "/dev/ttyS1"
+          2: "/dev/ttyS2"
+          3: "/dev/ttyS3"
+          4: "/dev/ttyS4"
+        
+      DNMXL_NUM_SERVOS:
+        description:
+          short: Number of servos used
+          long:  The maximum number is 8 servos
+        type: int32
+        default: 1
+        min: 1
+        max: 8
