@@ -1,0 +1,12 @@
+#!/bin/sh
+#
+# Initialization of the servos
+#
+echo "Starting Dynamixel Servos"
+dynamixel start &
+
+
+sleep 10
+dynamixel test 0 1
+sleep 10
+dynamixel init

@@ -104,3 +104,15 @@ if [ $VEHICLE_TYPE = none ]
 then
 	echo "No autostart ID found"
 fi
+
+#
+# Dynamixel servo configuration
+#
+echo "Starting Dynamixel Servos"
+dynamixel start &
+
+
+sleep 1
+dynamixel test 0 1
+sleep 1
+dynamixel init

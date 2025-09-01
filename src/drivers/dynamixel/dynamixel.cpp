@@ -44,7 +44,7 @@
 #include <termios.h>
 
 int32_t Dynamixel::port;
-char Dynamixel::device_name_save[256];
+char Dynamixel::device_name_save[32];
 int32_t Dynamixel::first_servo_id;
 int32_t Dynamixel::servo_num;
 int32_t Dynamixel::baudrate;
@@ -52,8 +52,8 @@ int32_t Dynamixel::baudrate;
 Dynamixel::Dynamixel(const char *device_name, int32_t baud_rate) :
 	ScheduledWorkItem(MODULE_NAME, px4::wq_configurations::hp_default)
 {
-	strncpy(_stored_device_name, device_name, sizeof(_stored_device_name) - 1);
-	_stored_device_name[sizeof(_stored_device_name) - 1] = '\0'; // Ensure null-termination
+	strncpy(device_name_save, device_name, sizeof(device_name_save) - 1);
+	device_name_save[sizeof(device_name_save) - 1] = '\0'; // Ensure null-termination
 
 	baudrate_save = baud_rate;
 
@@ -69,8 +69,6 @@ Dynamixel::~Dynamixel()
 //Configure the UART for the serial communication
 int Dynamixel::initialize_uart()
 {
-	static constexpr int TIMEOUT_US = 11_ms;
-	_uart_fd_timeout = { .tv_sec = 0, .tv_usec = TIMEOUT_US };
 
 	int32_t baud_rate_parameter_value = baudrate;
 	int32_t baud_rate_posix{0};
@@ -116,11 +114,11 @@ int Dynamixel::initialize_uart()
 	}
 
 	// start serial port
-	_uart_fd = open(_stored_device_name, O_RDWR | O_NOCTTY);
+	_uart_fd = open(device_name_save, O_RDWR | O_NOCTTY);
 
 	PX4_INFO("Configured");
 
-	if (_uart_fd < 0) { err(1, "could not open %s", _stored_device_name); }
+	if (_uart_fd < 0) { err(1, "could not open %s", device_name_save); }
 
 	int ret = 0;
 	struct termios uart_config {};
@@ -300,8 +298,8 @@ void Dynamixel::print_packet(const char *label, const uint8_t *packet, int lengt
 bool Dynamixel::init(const char *device_name, int32_t baud_rate)
 {
 	// Copiar los nombres de los argumentos
-	strncpy(_stored_device_name, device_name, sizeof(_stored_device_name) - 1);
-	_stored_device_name[sizeof(_stored_device_name) - 1] = '\0';
+	strncpy(device_name_save, device_name, sizeof(device_name_save) - 1);
+	device_name_save[sizeof(device_name_save) - 1] = '\0';
 
 	baudrate_save = baud_rate;
 
@@ -316,9 +314,9 @@ bool Dynamixel::init(const char *device_name, int32_t baud_rate)
 	}
 
 	//Initialize servos
-	send_command(BROADCAST_ID, REG_TORQUE_ENABLE, 1);
-	px4_usleep(100);
 	send_command(BROADCAST_ID, REG_LED_ENABLE, 1);
+	px4_usleep(100);
+	send_command(BROADCAST_ID, REG_TORQUE_ENABLE, 1);
 	PX4_INFO("Torque Enabled");
 
 	// Agendar la primera ejecución de Run()
@@ -413,6 +411,7 @@ int Dynamixel::task_spawn(int argc, char *argv[])
 		_object.store(instance);
 		_task_id = task_id_is_work_queue;
 		instance->init(device_name_save, baudrate);
+		instance->test_publish_actuator_servos(0, BROADCAST_ID);
 		PX4_INFO("Initialized OK");
 		return OK;
 
@@ -467,8 +466,6 @@ int Dynamixel::custom_command(int argc, char *argv[])
 
 		int16_t value = (int)strtol(argv[1],nullptr,10);
 		int16_t id = (int)strtol(argv[2],nullptr,10);
-
-		instance->cont = value;
 
 		instance->test_publish_actuator_servos(value, id);
 
@@ -585,10 +582,6 @@ void Dynamixel::Run()
 			}
 
 			for (int i = 0; i < servo_num; ++i) {
-				//const float min_pos = 0.0f;
-				//const float max_pos = 4095.0f;
-				//float normalized_value = (servo_data.control[i] + 1.0f) / 2.0f;
-				//uint32_t goal_position = min_pos + (uint32_t)(normalized_value * (max_pos - min_pos));
 				uint32_t goal_position = (int)servo_data.control[i];
 				uint8_t servo_id = first_servo_id + i;
 				send_command(servo_id, REG_GOAL_POSITION, goal_position);
@@ -605,9 +598,8 @@ int Dynamixel::print_status()
 {
 	PX4_INFO("Module Running");
 	PX4_INFO("UART initialized: %s", _uart_initialized ? "OK" : "Waiting");
-	PX4_INFO("Device: %s", _stored_device_name);
-	PX4_INFO("BaudRate: %s", _stored_device_name);
-	PX4_INFO("Contador: %d", (int)cont);
+	PX4_INFO("Device: %s", device_name_save);
+	PX4_INFO("BaudRate: %d", (int)baudrate);
 	return 0;
 }
 

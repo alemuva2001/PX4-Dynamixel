@@ -158,27 +158,23 @@ private:
 	bool _uart_initialized{false};
 	int _uart_fd{0};
 	fd_set _uart_fd_set;
-	struct timeval _uart_fd_timeout;
 
 	static int32_t baudrate;
 	static int32_t port;
-	static char device_name_save[256];
+	static char device_name_save[32];
 	static int32_t first_servo_id;
 	static int32_t servo_num;
 
 	int32_t baudrate_save;
 
-	int cont = 0;
-
 	int initialize_uart();
 
 	//Other parameters
-	char _stored_device_name[32]; // Adjust size as necessary
-	char _stored_baud_rate_parameter[32]; // Adjust size as necessary
+	//char _stored_device_name[32]; // Adjust size as necessary
+	//char _stored_baud_rate_parameter[32]; // Adjust size as necessary
 
 	uint16_t update_crc(uint16_t crc_accum, uint8_t *data_blk_ptr, uint16_t data_blk_size);
 
 	void send_command(uint8_t id, uint16_t reg, uint32_t value);
 	void print_packet(const char *label, const uint8_t *packet, int length);
-	int readResponse(uint8_t command, uint8_t *read_buffer, size_t bytes_to_read);
 };
